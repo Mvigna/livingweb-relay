@@ -4,31 +4,42 @@ import aiohttp
 import aiohttp.web
 import aiosqlite
 
-# --- CORS middleware (applies to ALL responses) ---
+# -------- CORS: global middleware (covers ALL responses, even errors) --------
 @aiohttp.web.middleware
 async def cors_middleware(request, handler):
-    # Handle preflight
+    # Handle preflight early
     if request.method == "OPTIONS":
         resp = aiohttp.web.Response(status=204)
     else:
         resp = await handler(request)
 
-    # Allow any origin (you can restrict to your Lovable domain if you want)
+    # Allow any origin; you can lock this to your Lovable origin if you prefer
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
     resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
+def _cors_json(d: dict, status: int = 200) -> aiohttp.web.Response:
+    """Per-response belt-and-suspenders CORS (in addition to middleware)."""
+    resp = aiohttp.web.json_response(d, status=status)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return resp
+
+def _cors_resp(text: str, content_type="text/html", status: int = 200) -> aiohttp.web.Response:
+    resp = aiohttp.web.Response(text=text, content_type=content_type, status=status)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    return resp
+
 def make_app(node):
     app = aiohttp.web.Application(middlewares=[cors_middleware])
 
     async def health(_):
-        return aiohttp.web.json_response({
-            "ok": True,
-            "node": node.ident.node_id,
-            "port": node.tcp_port
-        })
+        return _cors_json({"ok": True, "node": node.ident.node_id, "port": node.tcp_port})
 
     async def peers(_):
         data = []
@@ -39,7 +50,7 @@ def make_app(node):
                 "port": p.port,
                 "capabilities": getattr(p, "capabilities", []),
             })
-        return aiohttp.web.json_response(data)
+        return _cors_json(data)
 
     async def ask(req):
         try:
@@ -48,16 +59,17 @@ def make_app(node):
             body = {}
         q = (body.get("q") or "").strip()
         res = await node.query_mesh(q)
-        return aiohttp.web.json_response(res)
+        return _cors_json(res)
 
     async def balance(_):
         async with aiosqlite.connect(node.db_path) as db:
             async with db.execute("SELECT COALESCE(SUM(amount),0) FROM credits") as cur:
                 row = await cur.fetchone()
-        return aiohttp.web.json_response({"credits": row[0] if row else 0})
+        return _cors_json({"credits": row[0] if row else 0})
 
     async def index(_):
         html = f"""<!doctype html><meta charset="utf-8">
+        <link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="12" fill="%23111725"/><text x="50%" y="54%" font-size="34" text-anchor="middle" fill="%23EAEAF0" font-family="Arial,Helvetica,sans-serif">LW</text></svg>'>
         <style>
           body{{background:#0b0d14;color:#eaeaf0;font-family:ui-sans-serif,system-ui;margin:0}}
           .wrap{{max-width:900px;margin:40px auto;padding:16px}}
@@ -69,23 +81,18 @@ def make_app(node):
         </style>
         <div class="wrap">
           <h2>Living Web Relay</h2>
-          <div class="card">
-            <div><b>Node:</b> <code>{node.ident.node_id}</code></div>
-            <div><b>Mesh:</b> <code>{node.host}:{node.tcp_port}</code></div>
-          </div>
-          <div class="card">
-            <h3>Ask the Mesh</h3>
+          <div class="card"><div><b>Node:</b> <code>{node.ident.node_id}</code></div>
+          <div><b>Mesh:</b> <code>{node.host}:{node.tcp_port}</code></div></div>
+          <div class="card"><h3>Ask the Mesh</h3>
             <input id="q" style="width:70%" placeholder="Type a question…">
             <button onclick="ask()">Ask</button>
             <pre id="ans"></pre>
           </div>
-          <div class="card">
-            <h3>Peers</h3>
+          <div class="card"><h3>Peers</h3>
             <button onclick="peers()">Refresh</button>
             <pre id="peers"></pre>
           </div>
-          <div class="card">
-            <h3>Credits</h3>
+          <div class="card"><h3>Credits</h3>
             <button onclick="bal()">Check</button>
             <pre id="bal"></pre>
           </div>
@@ -97,15 +104,19 @@ def make_app(node):
           peers();
         </script>
         """
-        return aiohttp.web.Response(text=html, content_type="text/html")
+        return _cors_resp(html, "text/html")
 
-    # Preflight catch-all so browsers can probe any path
+    async def favicon(_):
+        return aiohttp.web.Response(status=204)
+
+    # OPTIONS catch-all so browsers can preflight any path
     app.router.add_route("OPTIONS", "/{tail:.*}", lambda _: aiohttp.web.Response(status=204))
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/peers", peers)
     app.router.add_post("/ask", ask)
     app.router.add_get("/balance", balance)
+    app.router.add_get("/favicon.ico", favicon)
     return app
 
 async def start_dashboard(node, host=None, port=None):
@@ -116,4 +127,4 @@ async def start_dashboard(node, host=None, port=None):
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, host, port)
     await site.start()
-    print(f"[dash] http://{host}:{port}  (CORS: *)")
+    print(f"[dash] http://{host}:{port}  (CORS on)")
