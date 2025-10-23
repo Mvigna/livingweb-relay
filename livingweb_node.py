@@ -546,21 +546,29 @@ async def repl(node: LivingWebNode):
 # ---------------- main ----------------
 async def main():
     node = LivingWebNode()
-    loop = asyncio.get_event_loop()
-    loop.create_task(node.run())
 
-    # start dashboard on $PORT (Render sets PORT); fallback 8088 locally
     dash_host = os.getenv("LW_BIND", "0.0.0.0")
-    dash_port = int(os.getenv("PORT", "8088"))
-    loop.create_task(start_dashboard(node, host=dash_host, port=dash_port))
+    dash_port = int(os.getenv("PORT", "8088"))  # Render sets PORT
 
-    await repl(node)  # no-op on headless deploys
-    # keep running forever
+    # === DIAG PRINTS ===
+    print("[diag] LW_BIND =", dash_host)
+    print("[diag] LW_TCP_PORT =", os.getenv("LW_TCP_PORT"))
+    print("[diag] PORT =", os.getenv("PORT"))
+
+    # Optional: allow disabling mesh listener in cloud if it causes issues
+    disable_mesh = os.getenv("DISABLE_MESH", "0") == "1"
+
+    if not disable_mesh:
+        # Start mesh node in the background
+        asyncio.get_event_loop().create_task(node.run())
+    else:
+        print("[diag] DISABLE_MESH=1 -> skipping mesh TCP listener")
+
+    # *** IMPORTANT: await the dashboard start so any error surfaces in logs ***
+    await start_dashboard(node, host=dash_host, port=dash_port)
+    print("[diag] dashboard started")
+
+    # No interactive REPL on Render; just keep the process alive
     while True:
         await asyncio.sleep(3600)
 
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
