@@ -1,30 +1,34 @@
 # lw_dashboard.py
 import os
-import json
 import aiohttp
 import aiohttp.web
 import aiosqlite
 
-def _corsify(resp: aiohttp.web.StreamResponse) -> aiohttp.web.StreamResponse:
-    resp.headers.update({
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-    })
+# --- CORS middleware (applies to ALL responses) ---
+@aiohttp.web.middleware
+async def cors_middleware(request, handler):
+    # Handle preflight
+    if request.method == "OPTIONS":
+        resp = aiohttp.web.Response(status=204)
+    else:
+        resp = await handler(request)
+
+    # Allow any origin (you can restrict to your Lovable domain if you want)
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type,Authorization"
+    resp.headers["Access-Control-Max-Age"] = "86400"
     return resp
 
 def make_app(node):
-    app = aiohttp.web.Application()
-
-    async def options_handler(_):
-        return _corsify(aiohttp.web.Response(status=204))
+    app = aiohttp.web.Application(middlewares=[cors_middleware])
 
     async def health(_):
-        return _corsify(aiohttp.web.json_response({
+        return aiohttp.web.json_response({
             "ok": True,
             "node": node.ident.node_id,
             "port": node.tcp_port
-        }))
+        })
 
     async def peers(_):
         data = []
@@ -35,22 +39,22 @@ def make_app(node):
                 "port": p.port,
                 "capabilities": getattr(p, "capabilities", []),
             })
-        return _corsify(aiohttp.web.json_response(data))
+        return aiohttp.web.json_response(data)
 
     async def ask(req):
         try:
             body = await req.json()
         except Exception:
             body = {}
-        q = body.get("q", "") or ""
+        q = (body.get("q") or "").strip()
         res = await node.query_mesh(q)
-        return _corsify(aiohttp.web.json_response(res))
+        return aiohttp.web.json_response(res)
 
     async def balance(_):
         async with aiosqlite.connect(node.db_path) as db:
             async with db.execute("SELECT COALESCE(SUM(amount),0) FROM credits") as cur:
                 row = await cur.fetchone()
-        return _corsify(aiohttp.web.json_response({"credits": row[0] if row else 0}))
+        return aiohttp.web.json_response({"credits": row[0] if row else 0})
 
     async def index(_):
         html = f"""<!doctype html><meta charset="utf-8">
@@ -93,9 +97,10 @@ def make_app(node):
           peers();
         </script>
         """
-        return _corsify(aiohttp.web.Response(text=html, content_type="text/html"))
+        return aiohttp.web.Response(text=html, content_type="text/html")
 
-    app.router.add_route("OPTIONS", "/{tail:.*}", options_handler)
+    # Preflight catch-all so browsers can probe any path
+    app.router.add_route("OPTIONS", "/{tail:.*}", lambda _: aiohttp.web.Response(status=204))
     app.router.add_get("/", index)
     app.router.add_get("/health", health)
     app.router.add_get("/peers", peers)
@@ -111,4 +116,4 @@ async def start_dashboard(node, host=None, port=None):
     await runner.setup()
     site = aiohttp.web.TCPSite(runner, host, port)
     await site.start()
-    print(f"[dash] http://{host}:{port}  (set VITE_RELAY_URL to this base URL)")
+    print(f"[dash] http://{host}:{port}  (CORS: *)")
