@@ -1,0 +1,6 @@
+pynacl
+cryptography
+uvloop
+msgpack
+aiosqlite
+aiohttp
