@@ -544,31 +544,51 @@ async def repl(node: LivingWebNode):
             break
 
 # ---------------- main ----------------
+import traceback
+
 async def main():
+    print("[boot] starting Living Web Relay")
     node = LivingWebNode()
 
     dash_host = os.getenv("LW_BIND", "0.0.0.0")
-    dash_port = int(os.getenv("PORT", "8088"))  # Render sets PORT
-
-    # === DIAG PRINTS ===
-    print("[diag] LW_BIND =", dash_host)
-    print("[diag] LW_TCP_PORT =", os.getenv("LW_TCP_PORT"))
-    print("[diag] PORT =", os.getenv("PORT"))
-
-    # Optional: allow disabling mesh listener in cloud if it causes issues
+    dash_port = int(os.getenv("PORT", "8088"))  # Render injects PORT
     disable_mesh = os.getenv("DISABLE_MESH", "0") == "1"
 
-    if not disable_mesh:
-        # Start mesh node in the background
-        asyncio.get_event_loop().create_task(node.run())
-    else:
-        print("[diag] DISABLE_MESH=1 -> skipping mesh TCP listener")
+    # show environment for Render diagnostics
+    print("[diag] LW_BIND    =", dash_host)
+    print("[diag] LW_TCP_PORT =", os.getenv("LW_TCP_PORT"))
+    print("[diag] PORT       =", os.getenv("PORT"))
+    print("[diag] DISABLE_MESH =", os.getenv("DISABLE_MESH", "0"))
 
-    # *** IMPORTANT: await the dashboard start so any error surfaces in logs ***
-    await start_dashboard(node, host=dash_host, port=dash_port)
-    print("[diag] dashboard started")
+    try:
+        if not disable_mesh:
+            # mesh listener in background; failures will print in logs
+            asyncio.get_event_loop().create_task(node.run())
+        else:
+            print("[diag] mesh listener disabled (DISABLE_MESH=1)")
 
-    # No interactive REPL on Render; just keep the process alive
-    while True:
-        await asyncio.sleep(3600)
+        # start dashboard synchronously so any bind error shows in logs
+        await start_dashboard(node, host=dash_host, port=dash_port)
+        print("[diag] dashboard started OK")
+
+        # keep the process alive (Render needs a running process)
+        while True:
+            await asyncio.sleep(3600)
+
+    except Exception:
+        print("[FATAL] Unhandled exception in main():")
+        traceback.print_exc()
+        # give logs time to flush
+        await asyncio.sleep(1)
+        raise
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except Exception:
+        # ensure any top-level crash is visible in Render logs
+        print("[FATAL] process exiting due to exception")
+        traceback.print_exc()
+        sys.exit(1)
+
 
